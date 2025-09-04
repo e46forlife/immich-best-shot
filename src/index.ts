@@ -2,25 +2,61 @@ import axios from 'axios';
 
 const IMMICH_BASE_URL = process.env.IMMICH_BASE_URL || "http://localhost:2283";
 const IMMICH_API_KEY = process.env.IMMICH_API_KEY || "";
-const BESTSHOT_ACTION = (process.env.BESTSHOT_ACTION || "favorite_only") as "favorite_only" | "favorite_and_hide" | "delete_alternates";
+const BESTSHOT_ACTION = (process.env.BESTSHOT_ACTION || "favorite_only") as
+  | "favorite_only"
+  | "favorite_and_hide"
+  | "delete_alternates";
+const APPLY_CHANGES = (process.env.APPLY_CHANGES || "false").toLowerCase() === "true";
 
 type DuplicateGroup = {
-  duplicateId: string;
+  id: string;       // group id
   assetIds: string[];
 };
 
+const api = axios.create({
+  baseURL: IMMICH_BASE_URL,
+  headers: { "x-api-key": IMMICH_API_KEY },
+  timeout: 30000,
+});
+
+// Fetch groups
 async function getDuplicateGroups(): Promise<DuplicateGroup[]> {
-  const url = `${IMMICH_BASE_URL}/api/duplicates/assets`;
-  const { data } = await axios.get(url, {
-    headers: { 'x-api-key': IMMICH_API_KEY }
-  });
+  const { data } = await api.get("/api/duplicates");
   return data;
+}
+
+// Apply changes to Immich
+async function applyAction(group: DuplicateGroup, bestId: string, others: string[]) {
+  console.log(`Would mark ${bestId} as favorite. Mode=${BESTSHOT_ACTION}.`);
+  if (!APPLY_CHANGES) return;
+
+  try {
+    // Favorite the best
+    await api.put("/api/assets", {
+      ids: [bestId],
+      isFavorite: true,
+    });
+
+    if (BESTSHOT_ACTION === "favorite_and_hide" && others.length) {
+      await api.put("/api/assets", {
+        ids: others,
+        visibility: "hidden",
+      });
+    }
+
+    if (BESTSHOT_ACTION === "delete_alternates" && others.length) {
+      // Delete the entire duplicate group
+      await api.delete(`/api/duplicates/${group.id}`);
+    }
+  } catch (e: any) {
+    console.error("Failed to apply action:", e.message);
+  }
 }
 
 async function main() {
   console.log("Best Shot Selector started...");
   if (!IMMICH_API_KEY) {
-    console.error("Missing IMMICH_API_KEY in environment variables");
+    console.error("Missing IMMICH_API_KEY in env vars");
     process.exit(1);
   }
 
@@ -28,12 +64,15 @@ async function main() {
     const groups = await getDuplicateGroups();
     console.log(`Found ${groups.length} duplicate groups.`);
 
-    // Placeholder: just log for now. Scoring will be added in next step.
+    // For now, just pick the first as best (replace later with scoring logic)
     for (const g of groups) {
-      console.log(`Group ${g.duplicateId} has ${g.assetIds.length} assets.`);
-    }
+      if (!g.assetIds.length) continue;
+      const best = g.assetIds[0];
+      const others = g.assetIds.slice(1);
 
-    console.log(`Action mode: ${BESTSHOT_ACTION}`);
+      console.log(`Group ${g.id}: picking ${best} as best, others=${others.length}`);
+      await applyAction(g, best, others);
+    }
   } catch (err: any) {
     if (axios.isAxiosError(err)) {
       console.error("Immich API error:", err.response?.status, err.response?.data || err.message);
