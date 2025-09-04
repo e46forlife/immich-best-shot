@@ -1,0 +1,17 @@
+{
+  "name": "immich-best-shot",
+  "version": "1.0.0",
+  "description": "Immich integration for selecting the best photo among duplicates",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "sharp": "^0.33.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.3"
+  }
+}
