@@ -72,10 +72,16 @@ async function getOrCreateAlbumByName(name: string): Promise<Album> {
   return data;
 }
 
-// Updated addAssetsToAlbum with detailed logging
+/**
+ * Add assets to a single album, with version-compat fallback:
+ * 1) Try POST /api/albums/{id}/assets  (newer servers)
+ * 2) On 404, try POST /api/albums/assets with { albumIds, assetIds } (older/alt servers)
+ * Requires albumAsset.create scope.
+ */
 async function addAssetsToAlbum(albumId: string, ids: string[]) {
   if (!ids.length) return;
   try {
+    // Attempt per-album endpoint
     const { data } = await api.post(`/api/albums/${albumId}/assets`, { ids });
     if (Array.isArray(data)) {
       const ok = data.filter((r: any) => r?.success).length;
@@ -88,11 +94,44 @@ async function addAssetsToAlbum(albumId: string, ids: string[]) {
       } else {
         console.log(`Album ${albumId}: added ${ok}/${data.length} assets`);
       }
-    } else {
-      console.log(`Album ${albumId}: add-assets call returned`, data);
+      return;
     }
-  } catch (e: any) {
-    console.error(`Album ${albumId}: add-assets failed:`, e?.response?.data || e?.message || e);
+    console.log(`Album ${albumId}: add-assets (per-album) returned`, data);
+  } catch (err: any) {
+    const status = err?.response?.status;
+    const body = err?.response?.data || err?.message;
+    if (status === 404) {
+      console.warn(
+        `Per-album endpoint not found on this server (404). Falling back to bulk addAssetsToAlbums for ${albumId}.`
+      );
+      // Fallback: bulk endpoint
+      try {
+        const { data } = await api.post(`/api/albums/assets`, {
+          albumIds: [albumId],
+          assetIds: ids,
+        });
+        // Expect shape: { albumSuccessCount, assetSuccessCount, success, error? }
+        if (data?.success === false) {
+          console.warn(
+            `Bulk addAssetsToAlbums: partial/failed. albumSuccessCount=${data?.albumSuccessCount} assetSuccessCount=${data?.assetSuccessCount} error=${data?.error}`
+          );
+        } else {
+          console.log(
+            `Bulk addAssetsToAlbums: albumSuccessCount=${data?.albumSuccessCount} assetSuccessCount=${data?.assetSuccessCount}`
+          );
+        }
+        return;
+      } catch (e: any) {
+        console.error(
+          `Fallback bulk addAssetsToAlbums failed for album ${albumId}:`,
+          e?.response?.data || e?.message || e
+        );
+        return;
+      }
+    } else {
+      console.error(`Album ${albumId}: add-assets (per-album) failed:`, body);
+      return;
+    }
   }
 }
 
