@@ -10,7 +10,7 @@ const BESTSHOT_ACTION = (process.env.BESTSHOT_ACTION || 'favorite_only') as
   | 'delete_alternates';
 const APPLY_CHANGES = (process.env.APPLY_CHANGES || 'false').toLowerCase() === 'true';
 
-// Review album mode (non-destructive “dry run” for a subset of groups)
+// Review album mode (non-destructive “dry run” subset)
 const REVIEW_ALBUM_MODE = (process.env.REVIEW_ALBUM_MODE || 'false').toLowerCase() === 'true';
 const REVIEW_ALBUM_LIMIT = Number(process.env.REVIEW_ALBUM_LIMIT || '10');
 const WINNERS_ALBUM_NAME = process.env.WINNERS_ALBUM_NAME || 'Best-Shot Review — Winners';
@@ -68,14 +68,32 @@ async function getOrCreateAlbumByName(name: string): Promise<Album> {
   const found = albums.find(a => albumDisplayName(a) === name);
   if (found) return found;
 
-  // create empty album
   const { data } = await api.post('/api/albums', { albumName: name }); // album.create
   return data;
 }
 
+// Updated addAssetsToAlbum with detailed logging
 async function addAssetsToAlbum(albumId: string, ids: string[]) {
   if (!ids.length) return;
-  await api.post(`/api/albums/${albumId}/assets`, { ids }); // album.update (add assets)
+  try {
+    const { data } = await api.post(`/api/albums/${albumId}/assets`, { ids });
+    if (Array.isArray(data)) {
+      const ok = data.filter((r: any) => r?.success).length;
+      const fails = data.filter((r: any) => !r?.success);
+      if (fails.length) {
+        console.warn(
+          `Album ${albumId}: added ${ok}/${data.length}; failures: ` +
+            fails.map((f: any) => `${f?.id}:${f?.error || 'unknown'}`).join(', ')
+        );
+      } else {
+        console.log(`Album ${albumId}: added ${ok}/${data.length} assets`);
+      }
+    } else {
+      console.log(`Album ${albumId}: add-assets call returned`, data);
+    }
+  } catch (e: any) {
+    console.error(`Album ${albumId}: add-assets failed:`, e?.response?.data || e?.message || e);
+  }
 }
 
 // -------- selection (placeholder; plug in scoring later) --------
@@ -87,18 +105,15 @@ function pickBest(assetIds: string[]): { best: string; others: string[] } {
 
 // -------- actions --------
 async function applyNormalActions(group: DuplicateGroup, bestId: string, others: string[]) {
-  console.log(`Would mark ${bestId} as favorite. Mode=${BESTSHOT_ACTION}.`);
+  console.log(`Normal mode: would mark ${bestId} as favorite. Mode=${BESTSHOT_ACTION}.`);
   if (!APPLY_CHANGES) return;
 
-  // 1) favorite winner
   await bulkFavorite([bestId]);
 
-  // 2) optionally hide alternates
   if (BESTSHOT_ACTION === 'favorite_and_hide' && others.length) {
     await bulkHide(others);
   }
 
-  // 3) optionally delete entire duplicate group (danger!)
   if (BESTSHOT_ACTION === 'delete_alternates' && others.length) {
     await deleteDuplicateGroup(group.duplicateId);
   }
@@ -111,12 +126,9 @@ async function applyReviewAlbumActions(
   others: string[],
 ) {
   console.log(
-    `Review mode: add winner ${bestId} -> "${WINNERS_ALBUM_NAME}", alternates (${others.length}) -> "${ALTERNATES_ALBUM_NAME}"`,
+    `Review mode: add winner ${bestId} -> "${WINNERS_ALBUM_NAME}", alternates (${others.length}) -> "${ALTERNATES_ALBUM_NAME}"`
   );
 
-  // Non-destructive even when APPLY_CHANGES=false? Your call:
-  // - To keep "review" truly dry, only write when APPLY_CHANGES=true.
-  // - If you want album writes regardless, set the if to always true.
   if (!APPLY_CHANGES) return;
 
   await addAssetsToAlbum(winnersAlbumId, [bestId]);
@@ -125,7 +137,11 @@ async function applyReviewAlbumActions(
 
 // -------- main --------
 async function main() {
-  console.log('Best Shot Selector started...');
+  console.log('Best Shot Selector starting…');
+  console.log(
+    `Flags ⇒ REVIEW_ALBUM_MODE=${REVIEW_ALBUM_MODE} REVIEW_ALBUM_LIMIT=${REVIEW_ALBUM_LIMIT} BESTSHOT_ACTION=${BESTSHOT_ACTION} APPLY_CHANGES=${APPLY_CHANGES}`
+  );
+
   if (!IMMICH_API_KEY) {
     console.error('Missing IMMICH_API_KEY in env vars');
     process.exit(1);
@@ -135,52 +151,55 @@ async function main() {
     const groups = await getDuplicateGroups();
     console.log(`Found ${groups.length} duplicate groups.`);
 
-    let winnersAlbumId: string | null = null;
-    let alternatesAlbumId: string | null = null;
-
     if (REVIEW_ALBUM_MODE) {
-      // Prep albums once
       const winners = await getOrCreateAlbumByName(WINNERS_ALBUM_NAME);
       const alternates = await getOrCreateAlbumByName(ALTERNATES_ALBUM_NAME);
-      winnersAlbumId = winners.id;
-      alternatesAlbumId = alternates.id;
+
       console.log(
-        `Review mode ON (limit ${REVIEW_ALBUM_LIMIT}). Winners album="${albumDisplayName(
-          winners,
-        )}", Alternates album="${albumDisplayName(alternates)}". APPLY_CHANGES=${APPLY_CHANGES}`,
+        `Review mode ON (limit ${REVIEW_ALBUM_LIMIT}). Winners="${albumDisplayName(
+          winners
+        )}", Alternates="${albumDisplayName(alternates)}".`
       );
-    } else {
-      console.log(`Normal mode. BESTSHOT_ACTION=${BESTSHOT_ACTION} APPLY_CHANGES=${APPLY_CHANGES}`);
+
+      const slice = groups.slice(0, REVIEW_ALBUM_LIMIT);
+      let processed = 0;
+
+      for (const g of slice) {
+        const assetIds = (g.assets ?? []).map(a => a.id).filter(Boolean);
+        if (!assetIds.length) {
+          console.log(`Group ${g.duplicateId}: no assets, skipping`);
+          continue;
+        }
+        const { best, others } = pickBest(assetIds);
+        console.log(`Group ${g.duplicateId}: best=${best}, others=${others.length} [review]`);
+        await applyReviewAlbumActions(winners.id, alternates.id, best, others);
+        processed++;
+      }
+
+      console.log(
+        `Done (review). Apply=${APPLY_CHANGES} Processed=${processed} WinnersAlbum="${albumDisplayName(
+          winners
+        )}" AlternatesAlbum="${albumDisplayName(alternates)}"`
+      );
+      return;
     }
 
-    const slice = REVIEW_ALBUM_MODE ? groups.slice(0, REVIEW_ALBUM_LIMIT) : groups;
+    console.log(`Normal mode ON. BESTSHOT_ACTION=${BESTSHOT_ACTION}`);
     let processed = 0;
 
-    for (const g of slice) {
+    for (const g of groups) {
       const assetIds = (g.assets ?? []).map(a => a.id).filter(Boolean);
       if (!assetIds.length) {
         console.log(`Group ${g.duplicateId}: no assets, skipping`);
         continue;
       }
-
       const { best, others } = pickBest(assetIds);
-      console.log(
-        `Group ${g.duplicateId}: picking ${best} as best, others=${others.length}${
-          REVIEW_ALBUM_MODE ? ' [review]' : ''
-        }`,
-      );
-
-      if (REVIEW_ALBUM_MODE && winnersAlbumId && alternatesAlbumId) {
-        await applyReviewAlbumActions(winnersAlbumId, alternatesAlbumId, best, others);
-      } else {
-        await applyNormalActions(g, best, others);
-      }
+      console.log(`Group ${g.duplicateId}: best=${best}, others=${others.length}`);
+      await applyNormalActions(g, best, others);
       processed++;
     }
 
-    console.log(
-      `Done. Mode=${REVIEW_ALBUM_MODE ? 'review-albums' : BESTSHOT_ACTION} Apply=${APPLY_CHANGES} Processed=${processed}`,
-    );
+    console.log(`Done (normal). Mode=${BESTSHOT_ACTION} Apply=${APPLY_CHANGES} Processed=${processed}`);
   } catch (err: any) {
     if (axios.isAxiosError(err)) {
       console.error('Immich API error:', err.response?.status, err.response?.data || err.message);
