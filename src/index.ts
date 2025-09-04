@@ -10,7 +10,7 @@ const BESTSHOT_ACTION = (process.env.BESTSHOT_ACTION || 'favorite_only') as
   | 'delete_alternates';
 const APPLY_CHANGES = (process.env.APPLY_CHANGES || 'false').toLowerCase() === 'true';
 
-// Review album mode (non-destructive “dry run” subset)
+// Review album mode (non-destructive subset for visual check)
 const REVIEW_ALBUM_MODE = (process.env.REVIEW_ALBUM_MODE || 'false').toLowerCase() === 'true';
 const REVIEW_ALBUM_LIMIT = Number(process.env.REVIEW_ALBUM_LIMIT || '10');
 const WINNERS_ALBUM_NAME = process.env.WINNERS_ALBUM_NAME || 'Best-Shot Review — Winners';
@@ -73,16 +73,14 @@ async function getOrCreateAlbumByName(name: string): Promise<Album> {
 }
 
 /**
- * Add assets to a single album, with version-compat fallback:
- * 1) Try POST /api/albums/{id}/assets  (newer servers)
- * 2) On 404, try POST /api/albums/assets with { albumIds, assetIds } (older/alt servers)
- * Requires albumAsset.create scope.
+ * Immich 1.140.1: add assets to album via PUT /api/albums/{id}/assets with { ids: [] }.
+ * Fallback (rare): bulk PUT /api/albums/assets with { albumIds, assetIds }.
+ * Requires albumAsset.create.
  */
 async function addAssetsToAlbum(albumId: string, ids: string[]) {
   if (!ids.length) return;
-  try {
-    // Attempt per-album endpoint
-    const { data } = await api.post(`/api/albums/${albumId}/assets`, { ids });
+
+  const logPerItem = (albumId: string, data: any) => {
     if (Array.isArray(data)) {
       const ok = data.filter((r: any) => r?.success).length;
       const fails = data.filter((r: any) => !r?.success);
@@ -94,44 +92,31 @@ async function addAssetsToAlbum(albumId: string, ids: string[]) {
       } else {
         console.log(`Album ${albumId}: added ${ok}/${data.length} assets`);
       }
-      return;
-    }
-    console.log(`Album ${albumId}: add-assets (per-album) returned`, data);
-  } catch (err: any) {
-    const status = err?.response?.status;
-    const body = err?.response?.data || err?.message;
-    if (status === 404) {
-      console.warn(
-        `Per-album endpoint not found on this server (404). Falling back to bulk addAssetsToAlbums for ${albumId}.`
-      );
-      // Fallback: bulk endpoint
-      try {
-        const { data } = await api.post(`/api/albums/assets`, {
-          albumIds: [albumId],
-          assetIds: ids,
-        });
-        // Expect shape: { albumSuccessCount, assetSuccessCount, success, error? }
-        if (data?.success === false) {
-          console.warn(
-            `Bulk addAssetsToAlbums: partial/failed. albumSuccessCount=${data?.albumSuccessCount} assetSuccessCount=${data?.assetSuccessCount} error=${data?.error}`
-          );
-        } else {
-          console.log(
-            `Bulk addAssetsToAlbums: albumSuccessCount=${data?.albumSuccessCount} assetSuccessCount=${data?.assetSuccessCount}`
-          );
-        }
-        return;
-      } catch (e: any) {
-        console.error(
-          `Fallback bulk addAssetsToAlbums failed for album ${albumId}:`,
-          e?.response?.data || e?.message || e
-        );
-        return;
-      }
     } else {
-      console.error(`Album ${albumId}: add-assets (per-album) failed:`, body);
-      return;
+      console.log(`Album ${albumId}: response`, data);
     }
+  };
+
+  // Primary (1.140.1 default)
+  try {
+    const { data } = await api.put(`/api/albums/${albumId}/assets`, { ids });
+    logPerItem(albumId, data);
+    return;
+  } catch (e: any) {
+    const status = e?.response?.status;
+    console.warn(`Per-album PUT failed ${albumId}:`, e?.response?.data || e?.message);
+    if (status !== 404) return; // if not a 404, don't keep guessing
+  }
+
+  // Fallback: bulk PUT
+  try {
+    const { data } = await api.put(`/api/albums/assets`, {
+      albumIds: [albumId],
+      assetIds: ids,
+    });
+    console.log(`Bulk PUT worked for album ${albumId}:`, data);
+  } catch (e: any) {
+    console.error(`Bulk PUT failed for album ${albumId}:`, e?.response?.data || e?.message);
   }
 }
 
