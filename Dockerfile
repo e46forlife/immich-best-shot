@@ -1,16 +1,15 @@
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Install deps
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
-# Copy source
+# Copy source and build
 COPY . .
-
-# Build TypeScript
 RUN npm run build
 
-# Use production image
+# Run
+ENV NODE_ENV=production
 CMD ["node", "dist/index.js"]
