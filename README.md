@@ -1,23 +1,28 @@
 # Immich Best Shot Selector
 
-This is a plugin-like service for Immich that uses duplicate detection and automatically chooses the best photo (based on quality metrics like sharpness, exposure, and framing).
+This service finds groups of similar/duplicate photos in Immich and (in the full version) will score them to mark a best shot.
 
-## Usage
+## Quick start (Docker Hub / Unraid)
+1) Set env vars in Unraid:
+- `IMMICH_BASE_URL` (e.g., `http://<immich-ip>:2283`)
+- `IMMICH_API_KEY`
+- `BESTSHOT_ACTION` (`favorite_only` | `favorite_and_hide` | `delete_alternates`)
 
-1. Copy `.env.example` to `.env` and fill in values.
-2. Build and run with Docker:
-   ```bash
-   docker build -t immich-best-shot .
-   docker run --rm --env-file .env --network=host immich-best-shot
-   ```
+2) Point Unraid at your Docker Hub image: `<dockerhub-username>/immich-best-shot:latest`
 
-## Environment Variables
+## Local build
+```bash
+npm install
+npm run build
+node dist/index.js
+```
 
-- `IMMICH_BASE_URL` — URL of your Immich instance (default `http://localhost:2283`).
-- `IMMICH_API_KEY` — API key from Immich Admin.
-- `BESTSHOT_ACTION` — what to do with alternates (`favorite_only`, `favorite_and_hide`, `delete_alternates`).
+## Docker build
+```bash
+docker build -t immich-best-shot .
+docker run --rm --env-file .env --network=host immich-best-shot
+```
 
-## GitHub Actions
-
-The repo includes a workflow in `.github/workflows/docker-build.yml` to build and publish this container to GitHub Container Registry (GHCR).
-
+## Notes
+- Start in `favorite_only` while testing.
+- The code currently lists duplicate groups. Scoring logic can be added once deployment is stable.

@@ -18,7 +18,7 @@ WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY package*.json ./
 
-# Install only production deps (none in our minimal app, but harmless)
+# Install only production deps
 RUN npm install --omit=dev
 
 ENV NODE_ENV=production
